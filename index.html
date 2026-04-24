@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LocalChatText Simulator</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="panel users-panel">
+      <div class="panel-header">
+        <h1>LocalChatText</h1>
+        <p>Group chat simulation</p>
+      </div>
+
+      <section class="users-controls">
+        <button id="addBotBtn" class="btn">Add Fake User</button>
+      </section>
+
+      <section>
+        <h2 class="section-title">Participants</h2>
+        <ul id="usersList" class="users-list"></ul>
+      </section>
+
+      <section class="editor">
+        <h2 class="section-title">Edit Selected Fake User</h2>
+        <div id="editorEmpty" class="editor-empty">
+          Select a fake user to edit their profile.
+        </div>
+        <form id="userEditorForm" class="editor-form hidden">
+          <label>
+            Username
+            <input type="text" id="editName" maxlength="24" required />
+          </label>
+          <label>
+            Personality
+            <textarea id="editPersonality" rows="3"></textarea>
+          </label>
+          <label>
+            About
+            <textarea id="editBio" rows="3"></textarea>
+          </label>
+          <label>
+            Profile Picture
+            <input type="file" id="editAvatar" accept="image/*" />
+          </label>
+          <div id="avatarSummary" class="avatar-summary"></div>
+          <div class="editor-actions">
+            <button type="submit" class="btn">Save</button>
+            <button type="button" id="deleteBotBtn" class="btn danger">Delete User</button>
+          </div>
+        </form>
+      </section>
+    </aside>
+
+    <main class="panel chat-panel">
+      <header class="chat-header">
+        <div>
+          <h2>Simulated Group Chat</h2>
+          <p id="statusText">Bots are thinking...</p>
+        </div>
+        <div class="tick-controls">
+          <button id="toggleBotsBtn" class="btn">Pause Bots</button>
+        </div>
+      </header>
+
+      <section id="chatMessages" class="chat-messages" aria-live="polite"></section>
+
+      <footer class="composer">
+        <div class="composer-row">
+          <label>
+            Send as
+            <select id="sendAsSelect"></select>
+          </label>
+          <label>
+            To
+            <select id="targetSelect"></select>
+          </label>
+        </div>
+
+        <div class="composer-row message-row">
+          <textarea id="messageInput" rows="3" placeholder="Type a message..."></textarea>
+          <div class="composer-actions">
+            <button id="attachBtn" class="btn" type="button">Attach Image/GIF</button>
+            <button id="sendBtn" class="btn primary" type="button">Send</button>
+          </div>
+        </div>
+
+        <input id="attachmentInput" type="file" accept="image/*,.gif" class="hidden" />
+        <div id="attachmentPreview" class="attachment-preview hidden"></div>
+      </footer>
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
