@@ -174,6 +174,7 @@ class BotDirector {
     this.app = app;
     this.botEnabled = true;
     this.timer = null;
+    this.startupTimer = null;
     this.botMemory = new Map();
     this.localAi = new LocalAiEngine(app);
     this.replyTimers = new Set();
@@ -188,7 +189,14 @@ class BotDirector {
         return;
       }
       this.tickAmbient();
-    }, 4200);
+    }, 2400);
+
+    if (!this.startupTimer) {
+      this.startupTimer = setTimeout(() => {
+        this.startupTimer = null;
+        this.primeConversation();
+      }, 1200);
+    }
   }
 
   stop() {
@@ -197,10 +205,44 @@ class BotDirector {
     }
     clearInterval(this.timer);
     this.timer = null;
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
+    }
     for (const id of this.replyTimers) {
       clearTimeout(id);
     }
     this.replyTimers.clear();
+  }
+
+  primeConversation() {
+    if (!this.botEnabled || this.app.messages.length > 8) {
+      return;
+    }
+
+    const bots = this.app.users.filter((u) => u.isBot);
+    if (bots.length < 2) {
+      return;
+    }
+
+    const first = bots[0];
+    const second = bots[1];
+    const openingOne = this.generateSentence(first, this.app.messages.slice(-12), this.app.messages[this.app.messages.length - 1] || null);
+    const openingTwo = this.generateSentence(second, this.app.messages.slice(-12), this.app.messages[this.app.messages.length - 1] || null);
+
+    Promise.resolve(openingOne).then((text) => {
+      if (text) {
+        this.app.addMessage({ senderId: first.id, targetId: "group", text, attachment: null, attachmentSummary: "" });
+      }
+    });
+
+    setTimeout(() => {
+      Promise.resolve(openingTwo).then((text) => {
+        if (text) {
+          this.app.addMessage({ senderId: second.id, targetId: "group", text, attachment: null, attachmentSummary: "" });
+        }
+      });
+    }, 1100);
   }
 
   async tickAmbient() {
@@ -294,7 +336,7 @@ class BotDirector {
       }
     }
 
-    return "I am here, and I am listening.";
+    return this.finalFallback(bot, lastMessage, topicWords);
   }
 
   profileFor(bot) {
@@ -343,16 +385,16 @@ class BotDirector {
           ])
         : "";
       const imageAngle = lastMessage.attachmentSummary
-        ? ` I also read the image as ${this.summarizeImageMood(lastMessage.attachmentSummary)}.`
+        ? ` That attachment looks ${this.summarizeImageMood(lastMessage.attachmentSummary)}.`
         : "";
       return this.withMention(
         mention,
         this.pick([
-          `${userGreeting} ${sourceName} brought up ${phrase || topic}, and I think that direction works.${imageAngle}`.trim(),
-          `${sourceName}'s point about ${phrase || topic} makes sense to me; we can build on that.${imageAngle}`,
-          `I am with ${sourceName} on ${topic}. Maybe we try one clear step, then refine.${imageAngle}`,
+          `${userGreeting} ${sourceName} brought up ${phrase || topic}, and that direction works for me.${imageAngle}`.trim(),
+          `${sourceName}'s point about ${phrase || topic} makes sense; we can build on it.${imageAngle}`,
+          `I am with ${sourceName} on ${topic}. We should try one clear step, then refine.${imageAngle}`,
           `That feels like a good angle from ${sourceName}. I would keep it moving.${imageAngle}`,
-          `I see what ${sourceName} means, and ${phrase || topic} is probably worth leaning into.${imageAngle}`
+          `I see what ${sourceName} means, and ${phrase || topic} is worth leaning into.${imageAngle}`
         ])
       );
     }
@@ -393,6 +435,26 @@ class BotDirector {
         `The shape of ${topic} is already there; it just needs a better finish.`
       ])
     );
+  }
+
+  finalFallback(bot, triggerMessage, topicWords) {
+    const topic = topicWords[0] || this.pick(["this", "that", "the thread", "the idea"]);
+    const sourceName = triggerMessage
+      ? this.app.users.find((u) => u.id === triggerMessage.senderId)?.name || "you"
+      : "you";
+    const greetings = triggerMessage && /\b(hi|hello|hey|yo)\b/i.test(triggerMessage.text || "");
+
+    const bank = [
+      greetings
+        ? `Hey ${sourceName}, I am here.`
+        : `${bot.name} thinks ${topic} is worth keeping in the conversation.`,
+      `I can work with that and build on it a bit.`,
+      `That feels like the kind of thing we should actually test in the room.`,
+      `I like the direction here, especially if we keep it simple.`,
+      `That gives the chat something real to react to.`
+    ];
+
+    return this.pick(bank);
   }
 
   pickMode(profile) {
@@ -525,7 +587,8 @@ class BotDirector {
       "being", "here", "over", "under", "still", "some", "more", "most", "only", "group", "chat", "readout",
       "problem", "split", "close", "point", "right", "left", "work", "works", "good", "better", "feels", "feel",
       "image", "images", "summary", "summaries", "text", "cue", "cues", "locally", "detected", "conversation",
-      "simulation", "welcome", "tracking", "tracked", "track", "read", "reads", "current", "thread"
+      "simulation", "welcome", "tracking", "tracked", "track", "read", "reads", "current", "thread", "attachment",
+      "context", "going", "going", "think", "thinks"
     ]);
   }
 
@@ -574,13 +637,14 @@ class LocalAiEngine {
     try {
       const prompt = this.buildPrompt(bot, context, triggerMessage, profile, topicWords);
       const response = await model(prompt, {
-        max_new_tokens: 48,
+        max_new_tokens: 52,
         do_sample: true,
         temperature: 0.85,
         top_p: 0.92,
         repetition_penalty: 1.15
       });
-      return this.extractGeneratedText(response);
+      const text = this.extractGeneratedText(response);
+      return this.trimToChatLine(text);
     } catch (_) {
       return this.fallbackMarkovLine({ bot, context, triggerMessage, profile, topicWords });
     }
@@ -595,7 +659,7 @@ class LocalAiEngine {
     try {
       const transformers = await this.loadTransformers();
       if (transformers?.pipeline) {
-        this.languageModel = await transformers.pipeline("text2text-generation", "Xenova/flan-t5-small");
+        this.languageModel = await transformers.pipeline("text-generation", "Xenova/distilgpt2");
       }
     } catch (_) {
       this.languageModel = null;
@@ -660,14 +724,14 @@ class LocalAiEngine {
     ].filter(Boolean).join(", ");
 
     return [
-      "You are roleplaying as one user in a group chat simulation.",
+      "You are roleplaying as one user in a live group chat simulation.",
       `Name: ${bot.name}`,
       `Personality notes: ${bot.personality || "normal"}. ${bot.bio || ""}`,
       `Style target: ${style || "natural human"}`,
-      "Write exactly one short natural message (1-2 sentences).",
-      "No lists, no quotes, no stage directions, no robotic phrasing.",
+      "Write exactly one short natural message, like a real person in a group chat.",
+      "No lists, no quotes, no stage directions, no references to being an AI.",
       "If someone greets the group, greet them back.",
-      "If an attachment is relevant, mention it naturally without saying anything about summaries or cues.",
+      "If an attachment matters, react to what it shows in plain language.",
       "Conversation:",
       recent,
       trigger,
@@ -676,129 +740,81 @@ class LocalAiEngine {
   }
 
   fallbackMarkovLine({ bot, context, triggerMessage, profile, topicWords }) {
-    const source = this.buildCorpus(context, bot);
-    const seed = topicWords[0] || "chat";
-    const sentence = this.markovSentence(source, seed);
-    const opening = this.naturalOpening(triggerMessage);
-    const flavor = this.flavorByProfile(profile, triggerMessage);
-    const line = `${opening}${sentence}${flavor}`.replace(/\s+/g, " ").trim();
-    return this.cleanFallback(line);
+    const line = this.buildHumanFallback({ bot, context, triggerMessage, profile, topicWords });
+    return this.trimToChatLine(line);
   }
 
-  buildCorpus(context, bot) {
-    const transcript = context
-      .map((m) => `${m.text || ""} ${m.attachmentSummary || ""}`.trim())
-      .join(" ");
-    const traits = `${bot.personality || ""} ${bot.bio || ""}`;
-    const base = [
-      "That makes sense and I can see where you are going.",
-      "I think we should keep it practical and test one step at a time.",
-      "I like this direction, it feels more real now.",
-      "If this helps, I can try a slightly different angle.",
-      "Good point, and we can make it cleaner without losing detail.",
-      "The attachment adds useful context and gives the chat something concrete to react to."
-    ].join(" ");
-    return `${base} ${traits} ${transcript}`;
+  buildHumanFallback({ bot, context, triggerMessage, profile, topicWords }) {
+    const greeting = triggerMessage && /\b(hi|hello|hey|yo)\b/i.test(triggerMessage.text || "");
+    const sourceName = triggerMessage
+      ? this.app.users.find((u) => u.id === triggerMessage.senderId)?.name || "you"
+      : "you";
+    const topic = topicWords[0] || this.pick(["that", "this", "the thread", "the idea", "the image"]);
+    const recentText = context
+      .slice(-5)
+      .map((m) => this.cleanSnippet(`${m.text || ""} ${m.attachmentSummary || ""}`))
+      .filter(Boolean);
+    const hook = recentText.length ? this.pick(recentText) : topic;
+
+    const openings = [
+      greeting ? `Hey ${sourceName}, ` : "",
+      greeting ? `Hi ${sourceName}, ` : "",
+      `I think ${hook} is worth reacting to. `,
+      `That point about ${hook} feels real. `,
+      `I get what you mean about ${hook}. `
+    ];
+
+    const linesByStyle = {
+      humor: [
+        `I am into it and I would keep the conversation moving.`,
+        `That has enough energy to turn into something fun.`,
+        `This feels like the kind of mess that actually works.`
+      ],
+      analytical: [
+        `I would keep it concrete and test the next step before changing too much.`,
+        `We should keep the logic tight and the next action obvious.`,
+        `That seems easier to follow if we make one decision at a time.`
+      ],
+      energetic: [
+        `I like where this is going and I want to hear more.`,
+        `That gives the room something lively to build on.`,
+        `We should keep the momentum going.`
+      ],
+      default: [
+        `I can work with that and add something useful.`,
+        `That seems like a good direction to push on.`,
+        `I would keep building from there.`
+      ]
+    };
+
+    const attachmentLines = this.contextualAttachmentLine(context);
+    const styleLines = linesByStyle[profile.humor ? "humor" : profile.analytical ? "analytical" : profile.energetic ? "energetic" : "default"];
+    const chosen = this.pick(styleLines);
+    return `${this.pick(openings)}${chosen}${attachmentLines}`;
   }
 
-  markovSentence(corpus, seedWord) {
-    const words = (corpus.toLowerCase().match(/[a-z0-9']+/g) || []).filter((w) => w.length > 2);
-    if (words.length < 8) {
-      return "I am in this thread and the direction looks good.";
-    }
-
-    const chain = new Map();
-    for (let i = 0; i < words.length - 1; i += 1) {
-      const key = words[i];
-      const next = words[i + 1];
-      if (!chain.has(key)) {
-        chain.set(key, []);
-      }
-      chain.get(key).push(next);
-    }
-
-    let current = chain.has(seedWord) ? seedWord : words[Math.floor(Math.random() * words.length)];
-    const out = [current];
-    const targetLength = 12 + Math.floor(Math.random() * 8);
-
-    for (let i = 0; i < targetLength; i += 1) {
-      const nextList = chain.get(current);
-      if (!nextList || !nextList.length) {
-        break;
-      }
-      current = nextList[Math.floor(Math.random() * nextList.length)];
-      out.push(current);
-    }
-
-    const text = out.join(" ").replace(/\s+/g, " ").trim();
-    const capped = text.charAt(0).toUpperCase() + text.slice(1);
-    return capped.endsWith(".") ? capped : `${capped}.`;
-  }
-
-  naturalOpening(triggerMessage) {
-    if (!triggerMessage || !triggerMessage.text) {
+  contextualAttachmentLine(context) {
+    const latest = [...context].reverse().find((m) => m.attachmentSummary);
+    if (!latest) {
       return "";
     }
-    if (/\b(hi|hello|hey|yo)\b/i.test(triggerMessage.text)) {
-      return "Hey, ";
+
+    const sourceName = this.app.users.find((u) => u.id === latest.senderId)?.name || "someone";
+    const mood = latest.attachmentSummary.toLowerCase();
+    if (mood.includes("text")) {
+      return ` I noticed the image had visible text, which gives us a clean thing to respond to.`;
     }
-    if (/\?$/.test(triggerMessage.text.trim())) {
-      return "Good question, ";
+    if (mood.includes("portrait") || mood.includes("face")) {
+      return ` The picture looks like something personal, so I would treat it as a real cue from ${sourceName}.`;
     }
-    return "";
+    if (mood.includes("gif") || mood.includes("animated")) {
+      return ` The GIF feels playful and gives ${sourceName} a good opening.`;
+    }
+    return ` The attachment from ${sourceName} gives the chat more to react to.`;
   }
 
-  flavorByProfile(profile, triggerMessage) {
-    const greeting = triggerMessage && /\b(hi|hello|hey|yo)\b/i.test(triggerMessage.text || "");
-    if (profile.humor) {
-      return this.pick([
-        "",
-        greeting ? " Hey, I am here." : " I am into this thread.",
-        " That is a funny angle.",
-        " I can work with that.",
-        " This is moving in a good direction."
-      ]);
-    }
-    if (profile.analytical) {
-      return this.pick([
-        "",
-        greeting ? " Hey, let us dig in." : " We can work through that.",
-        " That tracks.",
-        " There is a useful signal in that.",
-        " I would keep that part clear."
-      ]);
-    }
-    if (profile.energetic) {
-      return this.pick([
-        "",
-        greeting ? " Hey, good to see you." : " I am into it.",
-        " Let us keep it moving.",
-        " Nice, that gives us something to work with.",
-        " I like where this is going."
-      ]);
-    }
-    return this.pick([
-      "",
-      greeting ? " Hey." : "",
-      " That sounds reasonable.",
-      " I can follow that.",
-      " Fair point."
-    ]);
-  }
-
-  cleanFallback(text) {
-    const withoutRoboticPhrases = text
-      .replace(/\b(image summaries?|text cues?|locally|detected text|image readout)\b/gi, "")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (!withoutRoboticPhrases) {
-      return "I am here and following along.";
-    }
-
-    const sentences = withoutRoboticPhrases.split(/(?<=[.!?])\s+/);
-    const chosen = sentences[0] || withoutRoboticPhrases;
-    return this.sanitizeLine(chosen) || "I am here and following along.";
+  trimToChatLine(text) {
+    return this.sanitizeLine(text || "");
   }
 
   pick(list) {
@@ -808,7 +824,7 @@ class LocalAiEngine {
 
 class ChatApp {
   constructor() {
-    this.stateKey = "local-chat-text-state-v4";
+    this.stateKey = "local-chat-text-state-v5";
     this.users = [];
     this.messages = [];
     this.selectedBotId = null;
@@ -896,14 +912,14 @@ class ChatApp {
         id: crypto.randomUUID(),
         senderId: "bot-1",
         targetId: "group",
-        text: "Hey everyone, I am already here and paying attention.",
+        text: "Hey everyone, I am here and ready to jump in.",
         timestamp: Date.now()
       }),
       new ChatMessage({
         id: crypto.randomUUID(),
         senderId: "bot-2",
         targetId: "group",
-        text: "I am ready to jump in when something interesting comes up.",
+        text: "I can already see a few directions this chat could go.",
         timestamp: Date.now()
       })
     ];
