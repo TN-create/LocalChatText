@@ -67,7 +67,7 @@
 
       <section id="chatMessages" class="chat-messages scrollframe" aria-live="polite"></section>
 
-      <footer class="composer">
+      <form id="composerForm" class="composer">
         <div class="composer-row">
           <label>
             Send as
@@ -76,16 +76,16 @@
         </div>
 
         <div class="composer-row message-row">
-          <textarea id="messageInput" rows="3" placeholder="Type a message..."></textarea>
+          <textarea id="messageInput" rows="3" placeholder="Type a message... Press Enter to send, Shift+Enter for a new line."></textarea>
           <div class="composer-actions">
             <button id="attachBtn" class="btn" type="button">Attach Image/GIF</button>
-            <button id="sendBtn" class="btn primary" type="button">Send</button>
+            <button id="sendBtn" class="btn primary" type="submit">Send</button>
           </div>
         </div>
 
         <input id="attachmentInput" type="file" accept="image/*,.gif" class="hidden" />
         <div id="attachmentPreview" class="attachment-preview hidden"></div>
-      </footer>
+      </form>
     </main>
   </div>
 

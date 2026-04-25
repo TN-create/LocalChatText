@@ -831,6 +831,7 @@ class ChatApp {
     this.pendingAttachment = null;
 
     this.ui = {
+      composerForm: document.getElementById("composerForm"),
       usersList: document.getElementById("usersList"),
       chatMessages: document.getElementById("chatMessages"),
       sendAsSelect: document.getElementById("sendAsSelect"),
@@ -926,9 +927,19 @@ class ChatApp {
   }
 
   bindEvents() {
-    this.ui.sendBtn.addEventListener("click", () => this.handleSend());
+    this.ui.composerForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.handleSend();
+    });
     this.ui.messageInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        this.handleSend();
+        return;
+      }
+
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
         this.handleSend();
       }
     });
