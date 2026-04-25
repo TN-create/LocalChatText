@@ -131,6 +131,7 @@ class BotDirector {
     this.app = app;
     this.botEnabled = true;
     this.timer = null;
+    this.botMemory = new Map();
   }
 
   start() {
@@ -165,61 +166,142 @@ class BotDirector {
     }
 
     const bot = bots[Math.floor(Math.random() * bots.length)];
-    const context = this.app.messages.slice(-10);
+    const context = this.app.messages.slice(-18);
     const sentence = this.generateSentence(bot, context);
     if (!sentence) {
       return;
     }
 
-    const target = this.pickTarget(bot);
     this.app.addMessage({
       senderId: bot.id,
-      targetId: target,
+      targetId: "group",
       text: sentence,
       attachment: null,
       attachmentSummary: ""
     });
   }
 
-  pickTarget(bot) {
-    const others = this.app.users.filter((u) => u.id !== bot.id);
-    if (!others.length) {
-      return "group";
+  generateSentence(bot, context) {
+    const topicWords = this.extractTopicWords(context, bot.id);
+    const lastMessage = this.pickRecentExternalMessage(context, bot.id);
+    const profile = this.profileFor(bot);
+
+    for (let i = 0; i < 6; i += 1) {
+      const line = this.buildLine(bot, profile, topicWords, lastMessage).replace(/\s+/g, " ").trim();
+      if (!line) {
+        continue;
+      }
+      if (!this.isRecentDuplicate(bot.id, line)) {
+        this.remember(bot.id, line);
+        return line;
+      }
     }
-    const target = others[Math.floor(Math.random() * others.length)];
-    return target.id;
+
+    return "I am still here and following the thread.";
   }
 
-  generateSentence(bot, context) {
-    const seeds = this.extractSeeds(context);
-    const tone = bot.personality || "friendly";
-    const openers = [
-      "I keep thinking about",
-      "Hot take:",
-      "Random thought:",
-      "No joke,",
-      "I just noticed",
-      "Tiny update:"
-    ];
-    const closers = [
-      "what do you think?",
-      "anyway that is my mood right now.",
-      "I can expand if you want.",
-      "someone respond before I overthink this.",
-      "this is probably my personality talking.",
-      "curious how everyone reads this."
-    ];
+  profileFor(bot) {
+    const p = `${bot.personality || ""} ${bot.bio || ""}`.toLowerCase();
+    return {
+      concise: p.includes("short") || p.includes("punchy"),
+      humor: p.includes("humor") || p.includes("sarcasm") || p.includes("joke"),
+      analytical: p.includes("detail") || p.includes("calm") || p.includes("nerd") || p.includes("ground"),
+      energetic: p.includes("energetic") || p.includes("fast") || p.includes("trend")
+    };
+  }
 
-    const seed = seeds.length ? seeds[Math.floor(Math.random() * seeds.length)] : "our group vibe";
-    const opener = openers[Math.floor(Math.random() * openers.length)];
-    const closer = closers[Math.floor(Math.random() * closers.length)];
+  buildLine(bot, profile, topicWords, lastMessage) {
+    const topic = topicWords.length
+      ? topicWords[Math.floor(Math.random() * topicWords.length)]
+      : "the current thread";
+    const secondTopic = topicWords.length > 1
+      ? topicWords[Math.floor(Math.random() * topicWords.length)]
+      : "it";
+    const mention = Math.random() < 0.28 ? this.randomMention(bot.id) : "";
+    const mode = this.pickMode(profile);
 
-    const styleHint = this.trimStyleHint(tone);
-    const maybeMention = Math.random() < 0.4 ? this.randomMention(bot.id) : "";
-    const base = `${opener} ${seed}.`; 
-    const styleLine = styleHint ? ` ${styleHint}.` : "";
-    const mentionLine = maybeMention ? ` ${maybeMention}` : "";
-    return `${base}${styleLine}${mentionLine} ${closer}`.replace(/\s+/g, " ").trim();
+    if (mode === "question") {
+      return this.withMention(
+        mention,
+        this.pick([
+          `What are we optimizing around ${topic}?`,
+          `Do we want to keep ${topic} simple or make it richer?`,
+          `Does anyone else think ${topic} connects to ${secondTopic}?`,
+          `Would you ship this approach to ${topic} as-is?`
+        ])
+      );
+    }
+
+    if (mode === "reaction" && lastMessage) {
+      const sourceName = this.app.users.find((u) => u.id === lastMessage.senderId)?.name || "someone";
+      const phrase = this.cleanSnippet(lastMessage.text || "");
+      const imageAngle = lastMessage.attachmentSummary
+        ? ` Also, the image details sounded ${this.summarizeImageMood(lastMessage.attachmentSummary)}.`
+        : "";
+      return this.withMention(
+        mention,
+        this.pick([
+          `${sourceName} raised a good point on ${phrase || topic}; we can tighten that idea.${imageAngle}`,
+          `I agree with ${sourceName} on ${topic}, especially if we keep ${secondTopic} practical.${imageAngle}`,
+          `${sourceName}'s message about ${phrase || topic} feels right, but I would simplify the next step.${imageAngle}`
+        ])
+      );
+    }
+
+    if (mode === "humor") {
+      return this.withMention(
+        mention,
+        this.pick([
+          `I vote we stop overthinking ${topic} and just test it in the chat flow.`,
+          `${topic} is winning the conversation today, and I respect the chaos.`,
+          `If ${topic} had a fan club in here, half of us already joined.`
+        ])
+      );
+    }
+
+    if (mode === "analytical") {
+      return this.withMention(
+        mention,
+        this.pick([
+          `For ${topic}, I would split the problem into input, output, and validation.`,
+          `A reliable path for ${topic} is to keep state local and deterministic.`,
+          `The key tradeoff around ${topic} is speed versus clarity in the thread.`
+        ])
+      );
+    }
+
+    return this.withMention(
+      mention,
+      this.pick([
+        `Quick thought: ${topic} can work better if we connect it with ${secondTopic}.`,
+        `I am following the thread, and ${topic} still feels like the center of it.`,
+        `We are close here; ${topic} just needs one more clear pass.`
+      ])
+    );
+  }
+
+  pickMode(profile) {
+    const pool = ["general", "question", "reaction"];
+    if (profile.humor) {
+      pool.push("humor");
+    }
+    if (profile.analytical) {
+      pool.push("analytical");
+    }
+    if (profile.energetic) {
+      pool.push("question", "general");
+    }
+    if (profile.concise) {
+      pool.push("humor", "question");
+    }
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  withMention(mention, text) {
+    if (!mention) {
+      return text;
+    }
+    return `${mention} ${text}`;
   }
 
   randomMention(botId) {
@@ -231,32 +313,95 @@ class BotDirector {
     return `@${user.name}`;
   }
 
-  trimStyleHint(personality) {
-    const clean = personality.trim();
-    if (!clean) {
-      return "";
-    }
-    return clean.length <= 60 ? `(${clean})` : `(${clean.slice(0, 57)}...)`;
+  pickRecentExternalMessage(context, botId) {
+    const candidates = context.filter((m) => m.senderId !== botId);
+    return candidates.length ? candidates[candidates.length - 1] : null;
   }
 
-  extractSeeds(context) {
-    const words = [];
+  summarizeImageMood(summary) {
+    const s = summary.toLowerCase();
+    if (s.includes("vivid")) {
+      return "vivid and attention-grabbing";
+    }
+    if (s.includes("dark")) {
+      return "moody and low-light";
+    }
+    if (s.includes("bright")) {
+      return "bright and upbeat";
+    }
+    return "balanced";
+  }
+
+  cleanSnippet(text) {
+    const words = (text || "").toLowerCase().match(/[a-z]{4,}/g) || [];
+    const filtered = words.filter((w) => !this.stopWords().has(w));
+    if (!filtered.length) {
+      return "the thread";
+    }
+    return filtered.slice(0, 4).join(" ");
+  }
+
+  extractTopicWords(context, botId) {
+    const bag = [];
     for (const msg of context) {
+      if (msg.senderId === botId) {
+        continue;
+      }
       const text = `${msg.text || ""} ${msg.attachmentSummary || ""}`.toLowerCase();
-      const parts = text.match(/[a-z]{4,}/g) || [];
-      for (const p of parts) {
-        if (["that", "with", "have", "this", "from", "there", "about", "would"].includes(p)) {
+      const words = text.match(/[a-z]{4,}/g) || [];
+      for (const w of words) {
+        if (this.stopWords().has(w)) {
           continue;
         }
-        words.push(p);
+        bag.push(w);
       }
     }
-    return words.slice(-30);
+    const scored = this.rankWords(bag);
+    return scored.slice(0, 18);
+  }
+
+  rankWords(words) {
+    const count = new Map();
+    for (const w of words) {
+      count.set(w, (count.get(w) || 0) + 1);
+    }
+    return [...count.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map((entry) => entry[0]);
+  }
+
+  stopWords() {
+    return new Set([
+      "that", "with", "have", "this", "from", "there", "about", "would", "their", "could", "should",
+      "what", "when", "where", "which", "will", "just", "into", "then", "than", "they", "them", "your",
+      "you", "ours", "ourselves", "really", "also", "already", "very", "much", "make", "made", "been",
+      "being", "here", "over", "under", "still", "some", "more", "most", "only", "group", "chat", "readout"
+    ]);
+  }
+
+  pick(options) {
+    return options[Math.floor(Math.random() * options.length)];
+  }
+
+  isRecentDuplicate(botId, line) {
+    const memory = this.botMemory.get(botId) || [];
+    const normalized = line.toLowerCase();
+    return memory.some((m) => m === normalized);
+  }
+
+  remember(botId, line) {
+    const memory = this.botMemory.get(botId) || [];
+    memory.push(line.toLowerCase());
+    if (memory.length > 20) {
+      memory.shift();
+    }
+    this.botMemory.set(botId, memory);
   }
 }
 
 class ChatApp {
   constructor() {
+    this.stateKey = "local-chat-text-state-v2";
     this.users = [];
     this.messages = [];
     this.selectedBotId = null;
@@ -266,7 +411,6 @@ class ChatApp {
       usersList: document.getElementById("usersList"),
       chatMessages: document.getElementById("chatMessages"),
       sendAsSelect: document.getElementById("sendAsSelect"),
-      targetSelect: document.getElementById("targetSelect"),
       messageInput: document.getElementById("messageInput"),
       sendBtn: document.getElementById("sendBtn"),
       attachBtn: document.getElementById("attachBtn"),
@@ -293,15 +437,19 @@ class ChatApp {
   }
 
   seedDefaults() {
-    const stored = localStorage.getItem("local-chat-text-state-v1");
+    const stored = localStorage.getItem(this.stateKey);
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
         this.users = parsed.users.map((u) => new ChatUser(u));
         this.messages = parsed.messages.map((m) => new ChatMessage(m));
+        this.messages = this.messages.map((m) => {
+          m.targetId = "group";
+          return m;
+        });
         return;
       } catch (_) {
-        localStorage.removeItem("local-chat-text-state-v1");
+        localStorage.removeItem(this.stateKey);
       }
     }
 
@@ -516,7 +664,6 @@ class ChatApp {
 
   handleSend() {
     const senderId = this.ui.sendAsSelect.value;
-    const targetId = this.ui.targetSelect.value || "group";
     const text = this.ui.messageInput.value.trim();
 
     if (!text && !this.pendingAttachment) {
@@ -525,7 +672,7 @@ class ChatApp {
 
     this.addMessage({
       senderId,
-      targetId,
+      targetId: "group",
       text,
       attachment: this.pendingAttachment ? this.pendingAttachment.dataUrl : null,
       attachmentSummary: this.pendingAttachment ? this.pendingAttachment.summary : ""
@@ -589,12 +736,7 @@ class ChatApp {
       .map((u) => `<option value="${u.id}">${u.name}${u.isBot ? " (Fake AI)" : " (Main)"}</option>`)
       .join("");
 
-    const targetOptions = ["<option value=\"group\">Group Chat</option>"]
-      .concat(this.users.map((u) => `<option value="${u.id}">${u.name}</option>`))
-      .join("");
-
     this.ui.sendAsSelect.innerHTML = allOptions;
-    this.ui.targetSelect.innerHTML = targetOptions;
     if (![...this.ui.sendAsSelect.options].some((o) => o.value === this.ui.sendAsSelect.value)) {
       this.ui.sendAsSelect.value = "main-user";
     }
@@ -614,13 +756,10 @@ class ChatApp {
       item.className = `message ${isSelf ? "self" : ""}`;
 
       const time = new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      const target = message.targetId && message.targetId !== "group"
-        ? this.users.find((u) => u.id === message.targetId)?.name || "group"
-        : "group";
 
       item.innerHTML = `
         <div class="message-head">
-          <span>${sender.name} -> ${target}</span>
+          <span>${sender.name}</span>
           <span>${time}</span>
         </div>
         <div class="message-body">${this.escapeHtml(message.text || "")}</div>
@@ -667,7 +806,7 @@ class ChatApp {
       users: this.users,
       messages: this.messages
     };
-    localStorage.setItem("local-chat-text-state-v1", JSON.stringify(payload));
+    localStorage.setItem(this.stateKey, JSON.stringify(payload));
   }
 }
 
