@@ -325,7 +325,9 @@ class BotDirector {
           `What should we do next about ${topic}?`,
           `Do we want ${topic} to stay simple, or should it be richer?`,
           `Does ${topic} connect to ${secondTopic} for anyone else?`,
-          `Would this thread be better if we tested ${topic} directly?`
+          `Would this thread be better if we tested ${topic} directly?`,
+          `What do you think would make ${topic} feel more natural?`,
+          `Should we keep pushing on ${topic}, or pivot a little?`
         ])
       );
     }
@@ -348,7 +350,9 @@ class BotDirector {
         this.pick([
           `${userGreeting} ${sourceName} brought up ${phrase || topic}, and I think that direction works.${imageAngle}`.trim(),
           `${sourceName}'s point about ${phrase || topic} makes sense to me; we can build on that.${imageAngle}`,
-          `I am with ${sourceName} on ${topic}. Maybe we try one clear step, then refine.${imageAngle}`
+          `I am with ${sourceName} on ${topic}. Maybe we try one clear step, then refine.${imageAngle}`,
+          `That feels like a good angle from ${sourceName}. I would keep it moving.${imageAngle}`,
+          `I see what ${sourceName} means, and ${phrase || topic} is probably worth leaning into.${imageAngle}`
         ])
       );
     }
@@ -359,7 +363,9 @@ class BotDirector {
         this.pick([
           `I vote we stop overthinking ${topic} and just test it in the chat flow.`,
           `${topic} is carrying this conversation and honestly doing great.`,
-          `If ${topic} had a fan club, ${botName} would be in the front row.`
+          `If ${topic} had a fan club, ${botName} would be in the front row.`,
+          `This thread feels better when ${topic} stays the center of it.`,
+          `I am enjoying where ${topic} is going, even if it is a little messy.`
         ])
       );
     }
@@ -370,7 +376,9 @@ class BotDirector {
         this.pick([
           `For ${topic}, I would start with one clear requirement and validate it first.`,
           `A reliable way to handle ${topic} is to keep the logic simple and observable.`,
-          `The tradeoff on ${topic} is speed versus clarity, so I would favor clarity first.`
+          `The tradeoff on ${topic} is speed versus clarity, so I would favor clarity first.`,
+          `If we define ${topic} more tightly, the rest of the conversation gets easier.`,
+          `I would anchor ${topic} around one concrete example and build from there.`
         ])
       );
     }
@@ -380,7 +388,9 @@ class BotDirector {
       this.pick([
         `Quick thought: ${topic} may work better if we connect it with ${secondTopic}.`,
         `I am following this thread, and ${topic} still feels central.`,
-        `We are close here. ${topic} just needs one cleaner pass.`
+        `We are close here. ${topic} just needs one cleaner pass.`,
+        `I think ${topic} is close to landing if we simplify the last part.`,
+        `The shape of ${topic} is already there; it just needs a better finish.`
       ])
     );
   }
@@ -450,12 +460,32 @@ class BotDirector {
     if (!text) {
       return "";
     }
-    return text
+    const cleaned = text
       .replace(/[\r\n]+/g, " ")
       .replace(/\s+/g, " ")
       .replace(/^[\-\*\d\.\)\s]+/, "")
-      .trim()
-      .slice(0, 260);
+      .replace(/\b(image summaries?|text cues?|text and image cues?|locally|detected text|image readout)\b/gi, "")
+      .replace(/\b(a little chaotic, but in a good way|we can validate this quickly|let us keep momentum)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!cleaned) {
+      return "";
+    }
+
+    if (this.looksRobotic(cleaned)) {
+      return "";
+    }
+
+    return cleaned.slice(0, 260);
+  }
+
+  looksRobotic(text) {
+    const lower = text.toLowerCase();
+    const repeatedWord = /\b(\w+)(?:\s+\1\b){2,}/i.test(lower);
+    const fragmentLoop = /(image|summary|cue|locally|conversation)(?:\s+\1){1,}/i.test(lower);
+    const template = /\b(i am tracking|the key tradeoff|a reliable path|for .* i would split|we are close here)\b/i.test(lower);
+    return repeatedWord || fragmentLoop || template;
   }
 
   extractTopicWords(context, botId) {
@@ -493,7 +523,9 @@ class BotDirector {
       "what", "when", "where", "which", "will", "just", "into", "then", "than", "they", "them", "your",
       "you", "ours", "ourselves", "really", "also", "already", "very", "much", "make", "made", "been",
       "being", "here", "over", "under", "still", "some", "more", "most", "only", "group", "chat", "readout",
-      "problem", "split", "close", "point", "right", "left", "work", "works", "good", "better", "feels", "feel"
+      "problem", "split", "close", "point", "right", "left", "work", "works", "good", "better", "feels", "feel",
+      "image", "images", "summary", "summaries", "text", "cue", "cues", "locally", "detected", "conversation",
+      "simulation", "welcome", "tracking", "tracked", "track", "read", "reads", "current", "thread"
     ]);
   }
 
@@ -530,6 +562,7 @@ class LocalAiEngine {
     this.app = app;
     this.languageModel = null;
     this.modelCheckDone = false;
+    this.transformersLoader = null;
   }
 
   async tryGenerate({ bot, context, triggerMessage, profile, topicWords }) {
@@ -540,8 +573,14 @@ class LocalAiEngine {
 
     try {
       const prompt = this.buildPrompt(bot, context, triggerMessage, profile, topicWords);
-      const response = await model.prompt(prompt);
-      return response || "";
+      const response = await model(prompt, {
+        max_new_tokens: 48,
+        do_sample: true,
+        temperature: 0.85,
+        top_p: 0.92,
+        repetition_penalty: 1.15
+      });
+      return this.extractGeneratedText(response);
     } catch (_) {
       return this.fallbackMarkovLine({ bot, context, triggerMessage, profile, topicWords });
     }
@@ -554,11 +593,9 @@ class LocalAiEngine {
     this.modelCheckDone = true;
 
     try {
-      if (window.ai?.languageModel?.create) {
-        this.languageModel = await window.ai.languageModel.create({
-          temperature: 0.8,
-          topK: 30
-        });
+      const transformers = await this.loadTransformers();
+      if (transformers?.pipeline) {
+        this.languageModel = await transformers.pipeline("text2text-generation", "Xenova/flan-t5-small");
       }
     } catch (_) {
       this.languageModel = null;
@@ -566,10 +603,49 @@ class LocalAiEngine {
     return this.languageModel;
   }
 
+  async loadTransformers() {
+    if (window.transformers) {
+      return window.transformers;
+    }
+
+    if (!this.transformersLoader) {
+      this.transformersLoader = new Promise((resolve) => {
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.min.js";
+        script.async = true;
+        script.onload = () => resolve(window.transformers || null);
+        script.onerror = () => resolve(null);
+        document.head.appendChild(script);
+      });
+    }
+
+    return this.transformersLoader;
+  }
+
+  extractGeneratedText(response) {
+    if (!response) {
+      return "";
+    }
+
+    if (typeof response === "string") {
+      return response;
+    }
+
+    if (Array.isArray(response)) {
+      const first = response[0];
+      if (typeof first === "string") {
+        return first;
+      }
+      return first?.generated_text || first?.summary_text || first?.text || "";
+    }
+
+    return response.generated_text || response.summary_text || response.text || "";
+  }
+
   buildPrompt(bot, context, triggerMessage, profile, topicWords) {
     const recent = context.slice(-8).map((m) => {
       const sender = this.app.users.find((u) => u.id === m.senderId)?.name || "Unknown";
-      const att = m.attachmentSummary ? ` | image: ${m.attachmentSummary}` : "";
+      const att = m.attachmentSummary ? ` | attachment: ${m.attachmentSummary}` : "";
       return `${sender}: ${m.text || ""}${att}`;
     }).join("\n");
     const trigger = triggerMessage
@@ -591,7 +667,7 @@ class LocalAiEngine {
       "Write exactly one short natural message (1-2 sentences).",
       "No lists, no quotes, no stage directions, no robotic phrasing.",
       "If someone greets the group, greet them back.",
-      "If an image summary exists, mention one concrete thing from it naturally.",
+      "If an attachment is relevant, mention it naturally without saying anything about summaries or cues.",
       "Conversation:",
       recent,
       trigger,
@@ -604,9 +680,9 @@ class LocalAiEngine {
     const seed = topicWords[0] || "chat";
     const sentence = this.markovSentence(source, seed);
     const opening = this.naturalOpening(triggerMessage);
-    const flavor = this.flavorByProfile(profile);
+    const flavor = this.flavorByProfile(profile, triggerMessage);
     const line = `${opening}${sentence}${flavor}`.replace(/\s+/g, " ").trim();
-    return line;
+    return this.cleanFallback(line);
   }
 
   buildCorpus(context, bot) {
@@ -620,7 +696,7 @@ class LocalAiEngine {
       "I like this direction, it feels more real now.",
       "If this helps, I can try a slightly different angle.",
       "Good point, and we can make it cleaner without losing detail.",
-      "I read the image and the text cue gives useful context here."
+      "The attachment adds useful context and gives the chat something concrete to react to."
     ].join(" ");
     return `${base} ${traits} ${transcript}`;
   }
@@ -672,17 +748,57 @@ class LocalAiEngine {
     return "";
   }
 
-  flavorByProfile(profile) {
+  flavorByProfile(profile, triggerMessage) {
+    const greeting = triggerMessage && /\b(hi|hello|hey|yo)\b/i.test(triggerMessage.text || "");
     if (profile.humor) {
-      return this.pick(["", " A little chaotic, but in a good way.", " I am into this thread."]);
+      return this.pick([
+        "",
+        greeting ? " Hey, I am here." : " I am into this thread.",
+        " That is a funny angle.",
+        " I can work with that.",
+        " This is moving in a good direction."
+      ]);
     }
     if (profile.analytical) {
-      return this.pick(["", " We can validate this quickly.", " The logic feels consistent."]);
+      return this.pick([
+        "",
+        greeting ? " Hey, let us dig in." : " We can work through that.",
+        " That tracks.",
+        " There is a useful signal in that.",
+        " I would keep that part clear."
+      ]);
     }
     if (profile.energetic) {
-      return this.pick(["", " I am hyped to keep this going.", " Let us keep momentum."]);
+      return this.pick([
+        "",
+        greeting ? " Hey, good to see you." : " I am into it.",
+        " Let us keep it moving.",
+        " Nice, that gives us something to work with.",
+        " I like where this is going."
+      ]);
     }
-    return "";
+    return this.pick([
+      "",
+      greeting ? " Hey." : "",
+      " That sounds reasonable.",
+      " I can follow that.",
+      " Fair point."
+    ]);
+  }
+
+  cleanFallback(text) {
+    const withoutRoboticPhrases = text
+      .replace(/\b(image summaries?|text cues?|locally|detected text|image readout)\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!withoutRoboticPhrases) {
+      return "I am here and following along.";
+    }
+
+    const sentences = withoutRoboticPhrases.split(/(?<=[.!?])\s+/);
+    const chosen = sentences[0] || withoutRoboticPhrases;
+    return this.sanitizeLine(chosen) || "I am here and following along.";
   }
 
   pick(list) {
@@ -692,7 +808,7 @@ class LocalAiEngine {
 
 class ChatApp {
   constructor() {
-    this.stateKey = "local-chat-text-state-v3";
+    this.stateKey = "local-chat-text-state-v4";
     this.users = [];
     this.messages = [];
     this.selectedBotId = null;
@@ -780,14 +896,14 @@ class ChatApp {
         id: crypto.randomUUID(),
         senderId: "bot-1",
         targetId: "group",
-        text: "Welcome to the simulation. I am already mid-conversation.",
+        text: "Hey everyone, I am already here and paying attention.",
         timestamp: Date.now()
       }),
       new ChatMessage({
         id: crypto.randomUUID(),
         senderId: "bot-2",
         targetId: "group",
-        text: "I am tracking context from messages and image summaries locally.",
+        text: "I am ready to jump in when something interesting comes up.",
         timestamp: Date.now()
       })
     ];
